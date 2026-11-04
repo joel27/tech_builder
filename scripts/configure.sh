@@ -40,6 +40,15 @@ apply_susfs() {
     cp -R "$susfs_patches"/fs/* ./fs
     cp -R "$susfs_patches"/include/* ./include
 
+    # Upstream SUSFS (2026-11-02) left two static helpers outside the
+    # CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER guard. With that option off they are
+    # unused and -Werror,-Wunused-function aborts the build at fs/susfs.o.
+    # Idempotent: no-op once upstream fixes it or the helpers are already marked.
+    sed -i \
+        -e 's/^static struct cred \*susfs_switch_to_ksu_domain(/static __maybe_unused struct cred *susfs_switch_to_ksu_domain(/' \
+        -e 's/^static void susfs_restore_creds(/static __maybe_unused void susfs_restore_creds(/' \
+        ./fs/susfs.c
+
     patch -s -p1 --fuzz=3 --no-backup-if-mismatch < "$susfs_patches"/50_add_susfs_in_gki-android*-*.patch
 
     SUSFS_VERSION=$(grep -E '^#define SUSFS_VERSION' ./include/linux/susfs.h | cut -d' ' -f3 | sed 's/"//g')
