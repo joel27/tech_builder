@@ -1,7 +1,7 @@
 default_target = "xaga"
-kernel_name = "ESK"
+kernel_name = "Tech"
 build_user = "builder"
-build_host = "esk"
+build_host = "Tech"
 timezone = "Asia/Ho_Chi_Minh"
 lto = "thin"
 ccache = true
