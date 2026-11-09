@@ -42,6 +42,12 @@ apply_susfs() {
 
     patch -s -p1 --fuzz=3 --no-backup-if-mismatch < "$susfs_patches"/50_add_susfs_in_gki-android*-*.patch
 
+    # Evita -Werror=unused-function en fs/susfs.c (no-op si el patrón no coincide)
+    sed -i \
+        -e 's/^static struct cred \*susfs_switch_to_ksu_domain/static __maybe_unused struct cred *susfs_switch_to_ksu_domain/' \
+        -e 's/^static void susfs_restore_creds/static __maybe_unused void susfs_restore_creds/' \
+        ./fs/susfs.c
+
     SUSFS_VERSION=$(grep -E '^#define SUSFS_VERSION' ./include/linux/susfs.h | cut -d' ' -f3 | sed 's/"//g')
 
     config --enable CONFIG_KSU_SUSFS
@@ -79,9 +85,13 @@ prepare_build() {
         patch -s -p1 --fuzz=3 --no-backup-if-mismatch < "$KERNEL_PATCHES/stock_config.patch"
     fi
 
-    info "Setup NoMount"
-    curl -fsSL https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
-    config --enable CONFIG_NOMOUNT
+    if is_true "${NOMOUNT:-true}"; then
+        info "Setup NoMount"
+        curl -fsSL https://raw.githubusercontent.com/maxsteeel/nomount/refs/heads/dev/kernel/setup.sh | bash -
+        config --enable CONFIG_NOMOUNT
+    else
+        info "NoMount disabled"
+    fi
 
     clang_lto "$CLANG_LTO"
 }
