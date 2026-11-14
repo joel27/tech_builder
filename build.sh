@@ -65,7 +65,7 @@ prepare_dirs() {
 }
 
 main() {
-    : "${TARGET_NAME:?Use the Python CLI: uv run esk build}"
+    : "${TARGET_NAME:?Use the Python CLI: uv run tech build}"
     SECONDS=0 STEP=0
     validate_deps
     validate_env
