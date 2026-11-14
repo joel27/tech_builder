@@ -30,8 +30,8 @@ check: fmt-check bash-check lint py-lint py-check
 
 [positional-arguments]
 build *args:
-    uv run esk build "$@"
+    uv run tech build "$@"
 
 [positional-arguments]
 clean *args:
-    uv run esk clean "$@"
+    uv run tech clean "$@"
