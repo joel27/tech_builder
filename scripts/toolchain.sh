@@ -48,17 +48,17 @@ EOF
         cat << 'EOF'
 exec "$@"
 EOF
-    } > "$WRAPPER_DIR/esk-compiler-env"
+    } > "$WRAPPER_DIR/tech-compiler-env"
 
     local tool
     for tool in clang ld.lld; do
         cat > "$WRAPPER_DIR/$tool" << EOF
 #!/usr/bin/env bash
 set -Eeuo pipefail
-exec "\$WRAPPER_DIR/esk-compiler-env" "\$CLANG_BIN/$tool" "\$@"
+exec "\$WRAPPER_DIR/tech-compiler-env" "\$CLANG_BIN/$tool" "\$@"
 EOF
     done
-    chmod +x "$WRAPPER_DIR/esk-compiler-env" "$WRAPPER_DIR/clang" "$WRAPPER_DIR/ld.lld"
+    chmod +x "$WRAPPER_DIR/tech-compiler-env" "$WRAPPER_DIR/clang" "$WRAPPER_DIR/ld.lld"
 }
 
 setup_ld_preload() {
@@ -79,8 +79,8 @@ setup_ccache() {
     export CCACHE_BASEDIR="$WORKSPACE" CCACHE_COMPILERCHECK=content
     export CCACHE_SLOPPINESS="" CCACHE_HASHDIR=true CCACHE_COMPRESS=true
     unset CCACHE_NOHASHDIR
-    export CCACHE_PREFIX=esk-compiler-env CCACHE_PREFIX_CPP=esk-compiler-env
-    export CCACHE_EXTRAFILES="$WRAPPER_DIR/esk-compiler-env:$LIBFAKESTAT:$LIBFAKETIME"
+    export CCACHE_PREFIX=tech-compiler-env CCACHE_PREFIX_CPP=tech-compiler-env
+    export CCACHE_EXTRAFILES="$WRAPPER_DIR/tech-compiler-env:$LIBFAKESTAT:$LIBFAKETIME"
     if is_true "$CCACHE_ENABLED"; then
         unset CCACHE_DISABLE
         mkdir -p "$CCACHE_DIR"
