@@ -38,7 +38,7 @@ require_cmds() {
 }
 
 py_cli() {
-    uv run --project "$WORKSPACE" esk "$@"
+    uv run --project "$WORKSPACE" tech "$@"
 }
 
 is_true() {
