@@ -71,7 +71,7 @@ def doctor(target: Annotated[str | None, typer.Argument()] = None) -> None:
             "bash",
             "-c",
             'source "$1"\nvalidate_deps',
-            "esk-doctor",
+            "tech-doctor",
             str(WORKSPACE / "build.sh"),
         ],
         cwd=WORKSPACE,
