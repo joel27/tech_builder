@@ -1,0 +1,398 @@
+name: Build kernel
+run-name: "${{ inputs.target || 'auto' }} · ${{ inputs.preset }} · ${{ inputs.kernel_ref || 'ref por defecto' }}"
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Device
+        type: choice
+        default: xaga
+        options: [xaga, plato]
+      preset:
+        description: Variant
+        type: choice
+        default: vnl
+        options: [vnl, ksu, ksu-susfs]
+      kernel_ref:
+        description: Kernel branch, tag, or commit (empty uses target config)
+        type: string
+        default: ""
+      stock_config:
+        description: Stock configuration
+        type: choice
+        default: auto
+        options: [auto, 'true', 'false']
+      nomount:
+        description: Enable NoMount
+        type: boolean
+        default: true
+      notify:
+        description: Upload to Telegram
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        default: ""
+      preset:
+        type: string
+        default: vnl
+      kernel_ref:
+        type: string
+        default: ""
+      stock_config:
+        type: string
+        default: auto
+      nomount:
+        type: boolean
+        default: true
+      notify:
+        type: boolean
+        default: false
+    secrets:
+      GH_TOKEN:
+        required: false
+      TG_BOT_TOKEN:
+        required: false
+      TG_CHAT_ID:
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  TERM: xterm-256color
+  # Carpeta de logs e informe (se sube siempre como artifact aparte)
+  LOG_DIR: ${{ github.workspace }}/logs
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330   # deja margen para que el informe se genere antes del límite de 360
+    env:
+      TARGET: ${{ inputs.target }}
+      PRESET: ${{ inputs.preset }}
+      KERNEL_REF_INPUT: ${{ inputs.kernel_ref }}
+      STOCK_CONFIG_INPUT: ${{ inputs.stock_config }}
+      NOMOUNT: ${{ inputs.nomount }}
+      NOTIFY: ${{ inputs.notify }}
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+    steps:
+      - name: Mark start
+        run: |
+          echo "T0=$(date +%s)" >> "$GITHUB_ENV"
+          mkdir -p "$LOG_DIR"
+
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.14'
+
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Install dependencies
+        id: deps
+        run: |
+          set -o pipefail
+          {
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq aria2 bc bison bsdextrautils build-essential ccache curl \
+              flex git kmod libfaketime llvm patch tar xz-utils zip zstd
+            uv sync --locked --no-dev
+          } 2>&1 | tee "$LOG_DIR/deps.log"
+
+      - name: Resolve build settings
+        id: settings
+        run: |
+          args=()
+
+          if [[ -n "$TARGET" ]]; then
+            args+=("$TARGET")
+          fi
+
+          args+=(--preset "$PRESET")
+          args+=(--stock-config "$STOCK_CONFIG_INPUT")
+
+          if [[ -n "$KERNEL_REF_INPUT" ]]; then
+            args+=(--kernel-ref "$KERNEL_REF_INPUT")
+          fi
+
+          if [[ "$NOTIFY" == "true" ]]; then
+            args+=(--notify)
+          else
+            args+=(--no-notify)
+          fi
+
+          printf '%s\0' "${args[@]}" > "$RUNNER_TEMP/tech-args"
+
+          uv run --locked tech resolve "${args[@]}" \
+            > "$RUNNER_TEMP/tech-settings.json"
+
+          jq -r '
+            "target=\(.TARGET_NAME)",
+            "preset=\(.PRESET)",
+            "out_dir=\(.OUT_DIR)",
+            "cache_dir=\(.CCACHE_DIR)",
+            "cache_enabled=\(.CCACHE_ENABLED)"
+          ' "$RUNNER_TEMP/tech-settings.json" >> "$GITHUB_OUTPUT"
+
+          # Copia para el informe, sin ninguna clave que parezca un secreto
+          jq 'with_entries(select(.key | test("TOKEN|SECRET|PASS|KEY|CHAT"; "i") | not))' \
+            "$RUNNER_TEMP/tech-settings.json" > "$LOG_DIR/tech-settings.json" || true
+
+      - name: Restore compiler cache
+        id: cache
+        if: steps.settings.outputs.cache_enabled == 'true'
+        uses: actions/cache/restore@v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ steps.settings.outputs.cache_dir }}
+          key: ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.settings.outputs.target }}-${{ steps.settings.outputs.preset }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.settings.outputs.target }}-${{ steps.settings.outputs.preset }}-
+            ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.settings.outputs.target }}-
+
+      - name: Build
+        id: build
+        env:
+          OUT_DIR: ${{ steps.settings.outputs.out_dir }}
+          PYTHONUNBUFFERED: "1"
+          # SUSFS deja funciones static sin usar en fs/susfs.c y -Werror rompe el build
+          KCFLAGS: -Wno-unused-function -Wno-error=unused-function
+        run: |
+          mapfile -d '' -t args < "$RUNNER_TEMP/tech-args"
+          b0=$(date +%s)
+          # Todo lo que imprime el build se guarda también en un log (el código de salida se conserva)
+          uv run --locked tech build "${args[@]}" 2>&1 | tee "$LOG_DIR/tech-build.log"
+          status=${PIPESTATUS[0]}
+          echo "build_seconds=$(( $(date +%s) - b0 ))" >> "$GITHUB_OUTPUT"
+          if [[ -f "$OUT_DIR/compiled" ]]; then
+            echo 'compiled=true' >> "$GITHUB_OUTPUT"
+          fi
+          exit "$status"
+
+      - name: Upload packages and logs
+        id: artifact
+        if: ${{ !cancelled() && steps.settings.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.settings.outputs.target }}-${{ steps.settings.outputs.preset }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.settings.outputs.out_dir }}/
+          compression-level: 0
+          if-no-files-found: warn
+
+      - name: Save compiler cache
+        id: cache_save
+        if: ${{ !cancelled() && steps.build.outputs.compiled == 'true' && steps.settings.outputs.cache_enabled == 'true' }}
+        uses: actions/cache/save@v6.1.0
+        continue-on-error: true
+        with:
+          path: ${{ steps.settings.outputs.cache_dir }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Build summary
+        id: summary
+        if: ${{ !cancelled() && steps.settings.outcome == 'success' }}
+        env:
+          BUILD_TARGET: ${{ steps.settings.outputs.target }}
+          BUILD_PRESET: ${{ steps.settings.outputs.preset }}
+          BUILD_STATUS: ${{ steps.build.outcome }}
+          OUT_DIR: ${{ steps.settings.outputs.out_dir }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+        run: |
+          {
+            cat <<EOF
+          ### $BUILD_TARGET / $BUILD_PRESET
+
+          - **Build status** $BUILD_STATUS
+          EOF
+
+            if [[ -f "$OUT_DIR/build.json" ]]; then
+              jq -r '
+                "- **Kernel version** \(.kernel_version)",
+                "- **Kernel commit** [\(.kernel_commit[:12])](\(.kernel_url)/commit/\(.kernel_commit))",
+                "- **Compiler** \(.toolchain)",
+                "- **Compile time** \(.compile_seconds / 60 | floor)m \(.compile_seconds % 60)s"
+              ' "$OUT_DIR/build.json"
+            fi
+
+            if [[ -n "$ARTIFACT_URL" ]]; then
+              printf '\n[Download build artifact](%s)\n' "$ARTIFACT_URL"
+            fi
+
+            if [[ -f "$OUT_DIR/ccache-stats.txt" ]]; then
+              printf '\n%s\n\n%s\n' '#### ccache statistics' '```text'
+              cat "$OUT_DIR/ccache-stats.txt"
+              printf '%s\n' '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ---------------------------------------------------------------------
+      # Informe de compilación: se genera SIEMPRE (éxito, fallo o cancelación)
+      # ---------------------------------------------------------------------
+      - name: Build report (success or failure)
+        id: report
+        if: ${{ always() }}
+        shell: bash {0}   # sin -e: ningún comando debe cortar la creación del informe
+        env:
+          JOB_STATUS: ${{ job.status }}
+          OUT_DIR: ${{ steps.settings.outputs.out_dir }}
+          R_TARGET: ${{ steps.settings.outputs.target }}
+          R_PRESET: ${{ steps.settings.outputs.preset }}
+          BUILD_SECS: ${{ steps.build.outputs.build_seconds }}
+          O_DEPS: ${{ steps.deps.outcome }}
+          O_SETTINGS: ${{ steps.settings.outcome }}
+          O_CACHE_RESTORE: ${{ steps.cache.outcome }}
+          O_BUILD: ${{ steps.build.outcome }}
+          O_UPLOAD: ${{ steps.artifact.outcome }}
+          O_CACHE_SAVE: ${{ steps.cache_save.outcome }}
+          O_SUMMARY: ${{ steps.summary.outcome }}
+        run: |
+          mkdir -p "$LOG_DIR"
+          R="$LOG_DIR/build-report.txt"
+          E="$LOG_DIR/tech-build.log"
+          SENS='TOKEN|SECRET|PASS|KEY|CHAT'
+          NAME="${R_TARGET:-${TARGET:-auto}} / ${R_PRESET:-$PRESET}"
+
+          case "$JOB_STATUS" in
+            success)   RES="✅ ÉXITO" ;;
+            cancelled) RES="⏹️ CANCELADO" ;;
+            *)         RES="❌ FALLO" ;;
+          esac
+          NOW=$(date +%s); DUR=$(( NOW - ${T0:-$NOW} ))
+
+          # .config y release: búsqueda por si el builder compila en una carpeta que no conocemos
+          CFG=""; UTS=""
+          for d in "$OUT_DIR" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"; do
+            [ -n "$d" ] && [ -d "$d" ] || continue
+            [ -z "$CFG" ] && CFG=$(find "$d" -maxdepth 5 -type f -name .config -size +50k -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
+            [ -z "$UTS" ] && UTS=$(find "$d" -maxdepth 7 -type f -name utsrelease.h -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -n1 | cut -d' ' -f2-)
+          done
+          [ -n "$CFG" ] && cp "$CFG" "$LOG_DIR/dotconfig.txt"
+          REL=""
+          [ -n "$UTS" ] && REL=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"/\1/p' "$UTS")
+
+          {
+            echo "===== $NAME: informe de compilación ====="
+            echo "Resultado: $RES"
+            echo "Fecha (UTC): $(date -u '+%F %T') | duración total: $((DUR/60)) min $((DUR%60)) s | compilación: ${BUILD_SECS:-n/d} s"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID (intento $GITHUB_RUN_ATTEMPT)"
+            echo "Runner: $RUNNER_OS $RUNNER_ARCH | $(nproc) CPUs"
+            echo
+            echo "--- Entradas ---"
+            echo "target: ${TARGET:-(auto)} | preset: $PRESET | kernel_ref: ${KERNEL_REF_INPUT:-(el del target)}"
+            echo "stock_config: $STOCK_CONFIG_INPUT | nomount: $NOMOUNT | notify: $NOTIFY"
+            echo "Versión del kernel compilado: ${REL:-(no encontrada; ver build.json abajo)}"
+            case "$REL" in *-dirty*) echo "AVISO: la versión lleva -dirty";; esac
+
+            echo
+            echo "--- build.json (campos simples) ---"
+            if [ -n "$OUT_DIR" ] && [ -f "$OUT_DIR/build.json" ]; then
+              jq -r --arg s "$SENS" 'to_entries[] | select((.value|type)!="object" and (.value|type)!="array") | select(.key|test($s;"i")|not) | "\(.key): \(.value)"' "$OUT_DIR/build.json" | head -n 40
+            else
+              echo "(no existe build.json: no se llegó al final de la compilación)"
+            fi
+
+            echo
+            echo "--- Resultado por paso ---"
+            culprit=""
+            for s in DEPS SETTINGS CACHE_RESTORE BUILD UPLOAD CACHE_SAVE SUMMARY; do
+              v="O_$s"
+              printf '%-14s %s\n' "$s" "${!v:-n/d}"
+              if [ -z "$culprit" ] && [ "${!v}" = "failure" ]; then culprit="$s"; fi
+            done
+            [ "$JOB_STATUS" = "success" ] || echo "Primer paso con fallo: ${culprit:-(cancelado o sin determinar)}"
+
+            echo
+            echo "--- Configuración relevante (.config) ---"
+            if [ -n "$CFG" ]; then
+              echo "(origen: ${CFG#$GITHUB_WORKSPACE/})"
+              grep -E '^(# )?CONFIG_(KSU|SUSFS|LOCALVERSION|LTO_CLANG|CFI_CLANG|KPROBES|OVERLAY_FS)|NOMOUNT' "$CFG" | head -n 50
+            else
+              echo "(no se encontró ningún .config; ver 'Ajustes del build' abajo)"
+            fi
+
+            echo
+            echo "--- Compilación ---"
+            if [ -f "$E" ]; then
+              echo "warnings: $(grep -c ' warning: ' "$E") | errores: $(grep -c -E ' error: |\*\*\* ' "$E")"
+              echo "Warnings por tipo (top 12):"
+              grep ' warning: ' "$E" | sed -nE 's/.*\[(-W[A-Za-z0-9=_+-]+)\]$/\1/p' | sort | uniq -c | sort -rn | head -n 12
+              echo "Avisos 'No such file' en el log: $(grep -c 'No such file or directory' "$E")"
+              echo "SUSFS/KernelSU detectado en el log:"
+              grep -i -E 'SUSFS_VERSION|susfs|KernelSU.*version|BakaSU' "$E" | sort -u | head -n 8
+            else
+              echo "(no hay tech-build.log: no se llegó a compilar)"
+            fi
+
+            echo
+            echo "--- ccache ---"
+            if [ -n "$OUT_DIR" ] && [ -f "$OUT_DIR/ccache-stats.txt" ]; then
+              head -n 25 "$OUT_DIR/ccache-stats.txt"
+            else
+              echo "(sin ccache-stats.txt)"
+            fi
+
+            echo
+            echo "--- Paquetes generados ---"
+            if [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ]; then
+              found=0
+              while IFS= read -r f; do
+                found=1
+                printf '%s | %s bytes | sha256 %s\n' "${f#$OUT_DIR/}" "$(stat -c %s "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
+              done < <(find "$OUT_DIR" -maxdepth 3 -type f -name '*.zip' | sort)
+              [ "$found" = 0 ] && echo "(ningún .zip en $OUT_DIR)"
+              echo "Contenido de out_dir:"
+              ls -la "$OUT_DIR" | head -n 30
+            else
+              echo "(out_dir no disponible)"
+            fi
+
+            echo
+            echo "--- Ajustes del build (sin secretos) ---"
+            if [ -f "$LOG_DIR/tech-settings.json" ]; then
+              jq -r 'to_entries[] | select((.value|type)!="object" and (.value|type)!="array") | "\(.key)=\(.value)"' "$LOG_DIR/tech-settings.json" | cut -c1-160 | head -n 40
+            else
+              echo "(la resolución de ajustes no llegó a ejecutarse)"
+            fi
+
+            if [ "$JOB_STATUS" != "success" ]; then
+              echo
+              echo "--- Errores detectados (máx. 60) ---"
+              LOGS=("$LOG_DIR"/*.log)
+              [ -n "$OUT_DIR" ] && [ -d "$OUT_DIR" ] && while IFS= read -r l; do LOGS+=("$l"); done < <(find "$OUT_DIR" -type f -name '*.log' 2>/dev/null)
+              grep -H -n -i -E 'error:|\*\*\* |undefined (reference|symbol)|fatal error|ld\.lld: error|clang(-[0-9]+)?: error|no space left|cannot allocate memory|version .* not found|: not found|cannot open shared object|command not found|permission denied|traceback|^E: ' "${LOGS[@]}" 2>/dev/null | grep -v 'No such file or directory' | cut -c1-300 | head -n 60
+              echo
+              echo "--- Final del log del build (120 líneas) ---"
+              if [ -f "$E" ]; then tail -n 120 "$E"; else echo "(no hay tech-build.log)"; fi
+            fi
+
+            echo
+            echo "--- Recursos del runner ---"
+            df -h / | tail -n 2
+            free -h | head -n 2
+          } > "$R" 2>&1
+
+          {
+            if [ "$JOB_STATUS" = "success" ]; then echo "<details><summary>$RES · informe detallado</summary>"; else echo "<details open><summary>$RES · informe detallado</summary>"; fi
+            echo
+            echo '```text'
+            head -n 100 "$R"
+            echo '```'
+            echo
+            echo "Informe completo en el artifact **informe-${R_TARGET:-${TARGET:-build}}-${R_PRESET:-$PRESET}-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT**."
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload report and logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: informe-${{ steps.settings.outputs.target || inputs.target || 'build' }}-${{ steps.settings.outputs.preset || inputs.preset }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.LOG_DIR }}
+          retention-days: 14
+          if-no-files-found: warn

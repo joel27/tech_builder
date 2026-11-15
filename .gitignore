@@ -1,0 +1,19 @@
+# Build-managed paths
+/out/
+/work/
+/staging/
+/sources/
+/tools/
+/.ccache/
+
+# Editor state
+/.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+/.venv/
+/.python-version
+**/__pycache__/
+/.ruff_cache/

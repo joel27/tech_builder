@@ -1,0 +1,30 @@
+name: Check
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.14'
+
+      - uses: astral-sh/setup-uv@v10.3.3
+      - name: Install check tools
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y curl shellcheck shfmt
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to "$RUNNER_TEMP/just"
+          echo "$RUNNER_TEMP/just" >> "$GITHUB_PATH"
+          uv sync --locked
+
+      - run: just check
+      - name: Validate presets
+        run: |
+          for preset in vnl ksu ksu-susfs; do
+            uv run --locked tech resolve xaga --preset "$preset" > /dev/null
+          done
