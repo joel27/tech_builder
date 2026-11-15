@@ -37,6 +37,8 @@ jobs:
     needs: build
     if: inputs.create_release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # necesario para crear tag y release en este repo
     concurrency: tech-release
     steps:
       - uses: actions/checkout@v7.0.1
@@ -66,15 +68,24 @@ jobs:
           - **Kernel version** $kernel_version
           - **Kernel commit** $kernel_source
           - **Compiler** $toolchain
+          - **Build run** $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
           EOF
+
+          {
+            printf '\n### Files (SHA256)\n\n'
+            for f in release_files/*/*-AnyKernel3.zip; do
+              printf -- '- `%s` `%s`\n' "$(basename "$f")" "$(sha256sum "$f" | cut -d' ' -f1)"
+            done
+          } >> release-notes.md
 
           echo "kernel_name=$kernel_name" >> "$GITHUB_OUTPUT"
 
       - name: Publish prerelease
         id: publish
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN }}
-          RELEASE_REPO: ESK-Project/esk-releases
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPO: ${{ github.repository }}
+          RELEASE_SHA: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.tag }}
           KERNEL_NAME: ${{ steps.notes.outputs.kernel_name }}
           TARGET: ${{ inputs.target }}
@@ -102,7 +113,7 @@ jobs:
 
           url="$(gh release create "$tag" release_files/*/*-AnyKernel3.zip \
             --repo "$RELEASE_REPO" \
-            --target main \
+            --target "$RELEASE_SHA" \
             --prerelease \
             --title "$KERNEL_NAME Kernel $TARGET $tag" \
             --notes-file release-notes.md)"
