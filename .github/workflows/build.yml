@@ -83,9 +83,7 @@ jobs:
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
     steps:
       - name: Mark start
-        run: |
-          echo "T0=$(date +%s)" >> "$GITHUB_ENV"
-          mkdir -p "$LOG_DIR"
+        run: echo "T0=$(date +%s)" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v7.1.0
@@ -96,6 +94,7 @@ jobs:
       - name: Install dependencies
         id: deps
         run: |
+          mkdir -p "$LOG_DIR"   # después del checkout: checkout vacía el workspace
           set -o pipefail
           {
             sudo apt-get update -qq
