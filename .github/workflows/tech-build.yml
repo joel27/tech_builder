@@ -85,7 +85,8 @@ jobs:
       NOMOUNT_INPUT: ${{ inputs.nomount }}
       DEBUG_INPUT: ${{ inputs.debug }}
       NOTIFY: ${{ inputs.notify }}
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
+      # Si el secret GH_TOKEN no existe, usa el token integrado: sin token la API de GitHub corta a 60 peticiones/hora
+      GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
       GITHUB_TOKEN: ${{ github.token }}
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
