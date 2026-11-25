@@ -1,5 +1,5 @@
 default_target = "xaga"
-kernel_name = "ESK"
+kernel_name = "Tech"
 build_user = "builder"
 build_host = "esk"
 timezone = "Asia/Ho_Chi_Minh"
