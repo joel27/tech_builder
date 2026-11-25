@@ -24,6 +24,10 @@ on:
         description: KernelSU ref override
         type: string
         default: ''
+      nomount:
+        description: Enable NoMount
+        type: boolean
+        default: true
       debug:
         description: Enable debug
         type: boolean
@@ -92,6 +96,7 @@ jobs:
       preset: ${{ matrix.preset }}
       kernel_ref: ${{ matrix.kernel_ref }}
       ksu_ref: ${{ inputs.ksu_ref }}
+      nomount: ${{ inputs.nomount }}
       debug: ${{ inputs.debug }}
       notify: false
     secrets:
