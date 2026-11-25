@@ -21,6 +21,10 @@ on:
         description: KernelSU ref override (empty uses the preset default)
         type: string
         default: ""
+      nomount:
+        description: Enable NoMount
+        type: boolean
+        default: true
       debug:
         description: Enable performance debugging (not for releases)
         type: boolean
@@ -43,6 +47,9 @@ on:
       ksu_ref:
         type: string
         default: ""
+      nomount:
+        type: boolean
+        default: true
       debug:
         type: boolean
         default: false
@@ -75,6 +82,7 @@ jobs:
       PRESET: ${{ inputs.preset }}
       KERNEL_REF_INPUT: ${{ inputs.kernel_ref }}
       KSU_REF_INPUT: ${{ inputs.ksu_ref }}
+      NOMOUNT_INPUT: ${{ inputs.nomount }}
       DEBUG_INPUT: ${{ inputs.debug }}
       NOTIFY: ${{ inputs.notify }}
       GH_TOKEN: ${{ secrets.GH_TOKEN }}
@@ -162,6 +170,42 @@ jobs:
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.settings.outputs.target }}-${{ steps.settings.outputs.preset }}-
             ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.settings.outputs.target }}-
 
+      # ESK aplica NoMount siempre (scripts/configure.sh). Con nomount=false se quita ese bloque
+      # SOLO en el runner; así no editas un archivo de ESK y los sync no dan conflicto.
+      - name: Disable NoMount (nomount=false)
+        id: nomount
+        if: ${{ !inputs.nomount }}
+        run: |
+          f=scripts/configure.sh
+          start='info "Setup NoMount"'
+          end='config --enable CONFIG_NOMOUNT'
+
+          if ! grep -qF -- "$start" "$f" || ! grep -qF -- "$end" "$f"; then
+            echo "::error::NoMount block not found in $f (did upstream change it?)"
+            exit 1
+          fi
+
+          size="$(awk -v s="$start" -v e="$end" 'index($0, s) { on = 1 } on { n++ } on && index($0, e) { print n; exit }' "$f")"
+          if [[ "$size" != "3" ]]; then
+            echo "::error::Unexpected NoMount block size ($size lines); refusing to edit $f"
+            exit 1
+          fi
+
+          awk -v s="$start" -v e="$end" '
+            index($0, s) && !done { skip = 1; print "    info \"NoMount disabled\"" }
+            skip { if (index($0, e)) { skip = 0; done = 1 } ; next }
+            { print }
+          ' "$f" > "$f.new"
+          cat "$f.new" > "$f"
+          rm -f "$f.new"
+
+          if grep -qF -- "$end" "$f"; then
+            echo "::error::NoMount block is still present after editing $f"
+            exit 1
+          fi
+          bash -n "$f"
+          echo "NoMount disabled for this build"
+
       - name: Build
         id: build
         env:
@@ -230,7 +274,7 @@ jobs:
             echo
             echo "--- Entradas ---"
             echo "target: ${TARGET:-(auto)} | preset: $PRESET | kernel_ref: ${KERNEL_REF_INPUT:-(el del target)}"
-            echo "ksu_ref: ${KSU_REF_INPUT:-(el del preset)} | debug: $DEBUG_INPUT | notify: $NOTIFY"
+            echo "ksu_ref: ${KSU_REF_INPUT:-(el del preset)} | nomount: $NOMOUNT_INPUT | debug: $DEBUG_INPUT | notify: $NOTIFY"
             echo "Versión del kernel compilado: ${REL:-(no encontrada; ver build.json abajo)}"
             case "$REL" in *-dirty*) echo "AVISO: la versión lleva -dirty";; esac
 
